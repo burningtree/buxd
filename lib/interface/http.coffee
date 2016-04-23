@@ -18,15 +18,15 @@ class HTTPInterface extends Interface
           handler: (req, reply) =>
 
             reqInfo = "#{method}: #{req.url.path}"
-            cmd = req.params.cmd || 'get'
 
-            if !@buxd.plugins[pn][cmd]
-              @debug "#{reqInfo} [404]"
-              return reply 'command not found'
+            @buxd.execPlugin pn, { cmd: req.params.cmd }, (err, data) =>
+              if err and err == 'not found'
+                code = 404
+              else
+                code = 200
 
-            @buxd.plugins[pn][cmd] (value) =>
-              @debug "#{reqInfo} [200]"
-              return reply value
+              @debug "#{reqInfo} [#{code}]"
+              return reply(data).code(code)
             
       plug pn
 

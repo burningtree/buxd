@@ -1,3 +1,3 @@
 module.exports = (app, bux) ->
   get: (reply) ->
-    reply 'hello!'
+    reply 'Hello world!'

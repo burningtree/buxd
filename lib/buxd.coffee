@@ -1,52 +1,55 @@
 BUX = require 'libbux'
 async = require 'async'
+fs = require 'fs'
+Path = require 'path'
+yaml = require 'js-yaml'
+defaultsDeep = require 'lodash.defaultsdeep'
 
-BUXServerVersion = '0.1.0';
+BUXdVersion = '0.1.0';
 
-class BUXServer
-
-  config:
-    interfaces: 
-      http:
-        port: 5440
-        address: 'localhost'
-    plugins:
-      performance: {}
-      test: {}
-    account:
-      access_token: JSON.parse(require('fs').readFileSync(process.env.HOME+'/.bux-config.json')).account.access_token
+class BUXd
 
   interfaces: {}
   plugins: {}
-  version: BUXServerVersion
+  counters: {}
     
-  constructor: (config) ->
-    # TODO assign config
+  constructor: (@opts) ->
     @debug = require('debug')('buxd:main')
+    @debug "opts: #{@opts}"
 
   start: (callback) ->
     @debug "Initializing BUXd .."
 
-    @bux = new BUX.api(access_token: @config.account.access_token)
+    @loadConfig =>
+      @debug "Config loaded"
 
-    @debug "Loading plugins .."
-    @loadPlugins =>
-      @debug "Plugins loaded"
+      if !@config.account?.access_token
+        throw @exception "No access_token! Please run 'buxd auth'"
 
-      @debug "Starting interfaces .."
-      @loadInterfaces =>
-        @debug "Interfaces loaded"
+      @bux = new BUX.api(access_token: @config.account.access_token)
 
-        console.log "BUXd #{@version} started"
-        console.log "Loaded interfaces: #{Object.keys(@interfaces).join(', ')}"
-        console.log "Loaded plugins: #{Object.keys(@plugins).join(', ')}"
-        if callback then return callback()
-        return true
+      @debug "Loading plugins .."
+      @loadPlugins =>
+        @debug "Plugins loaded"
+
+        @debug "Starting interfaces .."
+        @loadInterfaces =>
+          @debug "Interfaces loaded"
+
+          @uptime = new Date()
+
+          console.log "BUXd #{@version()} started [libbux #{BUX.version}]"
+          console.log "Loaded interfaces: #{Object.keys(@interfaces).join(', ')}"
+          console.log "Loaded plugins: #{Object.keys(@plugins).join(', ')}"
+          if callback then return callback()
+          return true
 
   loadPlugins: (callback) ->
 
     async.each Object.keys(@config.plugins), (pn, next) =>
       pc = @config.plugins[pn]
+      if pc == false then return next()
+
       @debug "Loading plugin: #{pn}"
       target = require "../plugins/#{pn}"
         
@@ -73,16 +76,82 @@ class BUXServer
     , () ->
       callback()
 
-  test: () ->
+  loadConfig: (callback) ->
+    defaultConfigFile = Path.resolve(__dirname, '..', 'buxd.default.yaml')
+    defaultConfig = yaml.load fs.readFileSync(defaultConfigFile)
 
-    config = JSON.parse require('fs').readFileSync(process.env.HOME + '/.bux-config.json')
+    configFile = @opts.config || './buxd.yaml'
 
-    bux.profile (err, data) ->
-      console.log data
+    if !fs.existsSync(configFile)
+      throw new @exception "Config file not found: #{configFile}"
+
+    @debug "Loading config: #{configFile}"
+    @config = defaultsDeep yaml.load(fs.readFileSync(configFile)), defaultConfig
+
+    #@config.account = { access_token: JSON.parse(fs.readFileSync(process.env.HOME+'/.bux-config.json')).account.access_token }
+    callback()
+
+  execPlugin: (plugin, opts, callback) ->
+    cmd = opts.cmd || 'get'
+    if !@plugins[plugin][cmd] then return callback 'not found'
+
+    @plugins[plugin][cmd] (value) =>
+      @updateCounter "exec.#{plugin}.#{cmd}"
+      callback null, value
+
+  updateCounter: (type) ->
+    if !@counters[type] then @counters[type] = 0
+    @counters[type]++
+    return true
+
+  exception: (msg) ->
+    console.log msg
+    process.exit()
+
+  version: () ->
+    return BUXdVersion;
 
 module.exports =
-  Server: BUXServer
-  version: BUXServerVersion
-  create: (config) ->
-    return new BUXServer(config)
+
+  login: (opts) ->
+    prompt = require 'prompt'
+    prompt.message = ''
+    prompt.delimited = ''
+    prompt.start()
+
+    schema =
+      properties:
+        email: { description: 'Email' }
+        password: { description: 'Password', hidden: true }
+
+    prompt.get schema, (err, result) ->
+      if err then throw err
+
+      bux = new BUX.api()
+      bux.login result, (err, res) ->
+        if err then throw 'Login error'
+
+        console.log "Login success!"
+        console.log "access_token = #{res.access_token}"
+
+        fn = opts.config || "./buxd.yaml"
+        schema = { properties: { answer: { description: "Do you want write it to '#{fn}'? [y]" }}}
+        prompt.get schema, (err, result) ->
+          if err then throw err
+          prompt.stop()
+
+          if result.answer in [ '', 'y' ]
+            output = {}
+            if fs.existsSync(fn)
+              output = yaml.load fs.readFileSync(fn)
+
+            if !output.account then output.account = {}
+            output.account.access_token = res.access_token
+            fs.writeFileSync fn, yaml.dump(output)
+            console.log "Done. Token writed to file: #{fn}"
+
+
+  BUXd: BUXd
+  version: BUXdVersion
+  create: (config) -> return new BUXd(config)
 

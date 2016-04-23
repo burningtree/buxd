@@ -1,0 +1,10 @@
+account:
+  access_token: null
+interfaces:
+  http:
+    port: 5440
+    address: localhost
+plugins:
+  performance: {}
+  hello-world: {}
+  status: {}
